@@ -9,7 +9,15 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    // Manually read raw body stream
+    const rawBody = await new Promise((resolve, reject) => {
+      let data = '';
+      req.on('data', chunk => { data += chunk; });
+      req.on('end', () => resolve(data));
+      req.on('error', reject);
+    });
+
+    const body = JSON.parse(rawBody);
     const postData = JSON.stringify(body);
 
     const result = await new Promise((resolve, reject) => {
@@ -28,7 +36,7 @@ module.exports = async function handler(req, res) {
 
       const request = https.request(options, (response) => {
         let data = '';
-        response.on('data', (chunk) => { data += chunk; });
+        response.on('data', chunk => { data += chunk; });
         response.on('end', () => {
           try { resolve({ status: response.statusCode, data: JSON.parse(data) }); }
           catch (e) { reject(e); }
