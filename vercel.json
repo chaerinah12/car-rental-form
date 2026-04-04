@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/claude.js": {
-      "runtime": "nodejs@18"
-    }
-  }
-}
