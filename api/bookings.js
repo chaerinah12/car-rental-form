@@ -2,27 +2,24 @@ const https = require('https');
 
 function supabaseRequest(method, path, body = null) {
   return new Promise((resolve, reject) => {
-    const baseUrl = process.env.SUPABASE_URL.replace('https://', '');
+    const baseUrl = process.env.SUPABASE_URL.replace('https://', '').replace('http://', '');
     const postData = body ? JSON.stringify(body) : null;
-    const options = {
-      hostname: baseUrl,
-      port: 443,
-      path,
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': process.env.SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`,
-        ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {}),
-      },
+    const headers = {
+      'Content-Type': 'application/json',
+      'apikey': process.env.SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`,
+      'Prefer': 'return=minimal',
     };
+    if (postData) headers['Content-Length'] = Buffer.byteLength(postData);
+
+    const options = { hostname: baseUrl, port: 443, path, method, headers };
 
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: data ? JSON.parse(data) : null }); }
-        catch (e) { resolve({ status: res.statusCode, data }); }
+        try { resolve({ status: res.statusCode, data: data ? JSON.parse(data) : [] }); }
+        catch (e) { resolve({ status: res.statusCode, data: [] }); }
       });
     });
 
@@ -41,12 +38,14 @@ module.exports = async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const result = await supabaseRequest('GET', '/rest/v1/bookings?select=car_id,start_dt,end_dt');
-      const bookings = (result.data || []).map(b => ({
+      const data = Array.isArray(result.data) ? result.data : [];
+      const bookings = data.map(b => ({
         carId: b.car_id,
         startDT: b.start_dt,
         endDT: b.end_dt,
       }));
       res.status(200).json(bookings);
+
     } else if (req.method === 'POST') {
       const rawBody = await new Promise((resolve, reject) => {
         let data = '';
@@ -54,8 +53,9 @@ module.exports = async function handler(req, res) {
         req.on('end', () => resolve(data));
         req.on('error', reject);
       });
+
       const booking = JSON.parse(rawBody);
-      await supabaseRequest('POST', '/rest/v1/bookings', {
+      const result = await supabaseRequest('POST', '/rest/v1/bookings', {
         car_id: booking.carId,
         start_dt: booking.startDT,
         end_dt: booking.endDT,
@@ -65,7 +65,13 @@ module.exports = async function handler(req, res) {
         delivery_type: booking.deliveryType || '',
         delivery_address: booking.deliveryAddress || '',
       });
+
+      if (result.status >= 400) {
+        return res.status(result.status).json({ error: 'Supabase error', details: result.data });
+      }
+
       res.status(200).json({ success: true });
+
     } else {
       res.status(405).json({ error: 'Method not allowed' });
     }
