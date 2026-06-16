@@ -1,55 +1,54 @@
-const https = require('https');
+// /api/claude.js
+// Vercel serverless function. Proxies the frontend's zone-classification
+// request to the real Anthropic API, keeping the API key on the server.
+//
+// Setup:
+// 1. Put this file at api/claude.js in your project (same repo as index.html).
+// 2. In the Vercel dashboard: Project -> Settings -> Environment Variables,
+//    add ANTHROPIC_API_KEY = sk-ant-... (from console.anthropic.com -> API Keys).
+// 3. Redeploy. The frontend's fetch("/api/claude") will then reach this file.
+//
+// Security note: this endpoint has no login/auth, so anyone who finds the
+// URL could call it directly (not just through your site). To limit damage,
+// the model and max_tokens are fixed here on the server and NOT taken from
+// the request body, so a stranger can't make it expensive. Still worth
+// setting a monthly spend cap on your Anthropic account as a backstop.
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  const { messages } = req.body || {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: "Missing or invalid 'messages'" });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("ANTHROPIC_API_KEY is not set in Vercel environment variables");
+    return res.status(500).json({ error: "Server is missing its API key" });
+  }
 
   try {
-    // Manually read raw body stream
-    const rawBody = await new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', chunk => { data += chunk; });
-      req.on('end', () => resolve(data));
-      req.on('error', reject);
+    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001", // fixed here, ignores whatever the client sends
+        max_tokens: 500,                    // fixed here, ignores whatever the client sends
+        messages,
+      }),
     });
 
-    const body = JSON.parse(rawBody);
-    const postData = JSON.stringify(body);
-
-    const result = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: 'api.anthropic.com',
-        port: 443,
-        path: '/v1/messages',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-      };
-
-      const request = https.request(options, (response) => {
-        let data = '';
-        response.on('data', chunk => { data += chunk; });
-        response.on('end', () => {
-          try { resolve({ status: response.statusCode, data: JSON.parse(data) }); }
-          catch (e) { reject(e); }
-        });
-      });
-
-      request.on('error', reject);
-      request.write(postData);
-      request.end();
-    });
-
-    res.status(result.status).json(result.data);
+    const data = await anthropicRes.json();
+    return res.status(anthropicRes.status).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Claude proxy error:", err);
+    return res.status(500).json({ error: "Failed to reach Claude" });
   }
-};
+}
